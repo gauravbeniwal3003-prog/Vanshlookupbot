@@ -8,7 +8,7 @@ MOBILE_LOOKUP_URL = "https://tracexdata-api.onrender.com/api/lookup?key=vansh-30
 VEHICLE_LOOKUP_URL = "https://techvishalboss.com/api/v1/lookup.php?key=TVB_SGL_15A5F652&service=vehicle&rc={}"
 
 # Bot Token (Replace with your actual bot token)
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8403400013:AAFFdGZXs4ng6lh97Cg3ObAj8nmAqJ89Lxs"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message when /start is issued."""
