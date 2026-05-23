@@ -1,8 +1,24 @@
 import requests
 import re
-import asyncio
+from flask import Flask
+from threading import Thread
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+
+# Flask web server for Render
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
+
+# Start web server in a separate thread
+Thread(target=run_web, daemon=True).start()
 
 # Hardcoded API Keys and URLs
 MOBILE_LOOKUP_URL = "https://tracexdata-api.onrender.com/api/lookup?key=vansh-30&query={}"
@@ -22,9 +38,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "🚀 *Welcome to Lookup Bot!*\n\n"
         "I can help you lookup information for:\n"
-        "• 📱 Mobile Numbers (10 digits)\n"
-        "• 🚗 Vehicle Numbers (Indian format)\n\n"
-        "Select an option below or directly send me a number!"
+        "• 📱 Mobile Numbers (10 digits only)\n"
+        "• 🚗 Vehicle Numbers (contains letters & numbers)\n\n"
+        "Just send me any number and I'll automatically detect:\n"
+        "- Only digits → Mobile number lookup\n"
+        "- Letters + digits → Vehicle number lookup\n\n"
+        "Or select an option below:"
     )
     
     await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)
@@ -77,9 +96,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data['search_type'] = 'vehicle'
 
+def detect_input_type(text: str) -> str:
+    """
+    Detect if input is mobile number or vehicle number
+    Returns: 'mobile' or 'vehicle'
+    """
+    # Remove spaces and special characters
+    cleaned = re.sub(r'[\s\-+]', '', text)
+    
+    # Check if it contains only digits
+    if cleaned.isdigit():
+        return 'mobile'
+    else:
+        # Contains letters (with or without digits)
+        return 'vehicle'
+
 def clean_mobile_number(number: str) -> str:
     """Clean mobile number by removing +91 and non-digit characters."""
+    # Remove +91 if present
     number = number.replace('+91', '')
+    # Remove any non-digit characters
     number = re.sub(r'\D', '', number)
     return number
 
@@ -90,7 +126,9 @@ def is_valid_mobile(number: str) -> bool:
 
 def is_valid_vehicle(number: str) -> str:
     """Check if the input looks like a vehicle number and clean it."""
+    # Remove spaces and convert to uppercase
     cleaned = re.sub(r'\s+', '', number).upper()
+    # Indian vehicle number format: 2 letters + 2 digits + optional letters + 4 digits
     pattern = r'^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$'
     if re.match(pattern, cleaned):
         return cleaned
@@ -194,19 +232,39 @@ def format_vehicle_response(data: dict, vehicle_number: str) -> str:
     return response
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming messages and detect if it's mobile or vehicle number."""
+    """Handle incoming messages and auto-detect if it's mobile or vehicle number."""
     message_text = update.message.text.strip()
     
-    if is_valid_mobile(message_text):
-        context.user_data['last_search_type'] = 'mobile'
+    # Auto-detect based on content (only digits = mobile, letters+digits = vehicle)
+    input_type = detect_input_type(message_text)
+    
+    if input_type == 'mobile':
+        # Check if it's a valid mobile number
         cleaned_number = clean_mobile_number(message_text)
-        await lookup_mobile(update, context, cleaned_number)
+        if len(cleaned_number) == 10 and cleaned_number.isdigit():
+            context.user_data['last_search_type'] = 'mobile'
+            await lookup_mobile(update, context, cleaned_number)
+        else:
+            await update.message.reply_text(
+                "❌ *Invalid Mobile Number*\n\nPlease send a valid 10-digit mobile number.\n\nExample: 8585696996\n\n*Note:* Make sure the number contains only digits (with optional +91).",
+                parse_mode='Markdown'
+            )
     
-    elif is_valid_vehicle(message_text):
-        context.user_data['last_search_type'] = 'vehicle'
-        cleaned_vehicle = is_valid_vehicle(message_text)
-        await lookup_vehicle(update, context, cleaned_vehicle)
+    elif input_type == 'vehicle':
+        # Try to clean and validate vehicle number
+        cleaned_vehicle = re.sub(r'\s+', '', message_text).upper()
+        
+        # Basic validation - should contain at least 2 letters and 4 digits
+        if len(cleaned_vehicle) >= 6 and any(c.isalpha() for c in cleaned_vehicle) and any(c.isdigit() for c in cleaned_vehicle):
+            context.user_data['last_search_type'] = 'vehicle'
+            await lookup_vehicle(update, context, cleaned_vehicle)
+        else:
+            await update.message.reply_text(
+                "❌ *Invalid Vehicle Number*\n\nPlease send a valid Indian vehicle number.\n\nExample: MH01AB1234\n\n*Format:* State code + district code + letters + numbers",
+                parse_mode='Markdown'
+            )
     
+    # Also handle manual selection mode (if user clicked a button first)
     elif context.user_data.get('search_type') == 'mobile':
         if is_valid_mobile(message_text):
             context.user_data['last_search_type'] = 'mobile'
@@ -230,17 +288,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     
     else:
+        # If nothing matches, ask user to select an option
         keyboard = [
             [InlineKeyboardButton("🔍 Search Mobile Number", callback_data='search_mobile')],
             [InlineKeyboardButton("🚗 Search Vehicle Number", callback_data='search_vehicle')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "❓ *I couldn't identify your input*\n\nPlease select an option below or send a valid number:",
+            "❓ *I couldn't identify your input*\n\n"
+            "Please select an option below or send a valid:\n"
+            "• Mobile number (10 digits only)\n"
+            "• Vehicle number (contains letters & digits)\n\n"
+            "*Tip:* Only digits → Mobile lookup\nLetters + digits → Vehicle lookup",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
     
+    # Reset search type after handling
     context.user_data['search_type'] = None
 
 async def lookup_mobile(update: Update, context: ContextTypes.DEFAULT_TYPE, mobile_number: str):
@@ -326,6 +390,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🤖 Bot is starting...")
+    print("🌐 Flask web server is running on port 10000")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
